@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Timeplan Admin/Visning</title>
+  <style>
+    body { font-family: sans-serif; padding: 1em; margin: 0; }
+    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1em; }
+    h1 { margin: 0; }
+    button, a.button-link { padding: .5em 1em; font-size: 1em; background: #eee; border: 1px solid #000; border-radius: 4px; cursor: pointer; text-decoration: none; color: #000; }
+    #controls { margin-bottom: 1em; }
+    #controls input { width: 100%; padding: .5em; margin-bottom: .5em; }
+    .entity-group { display: inline-block; margin: 0 .5em .5em 0; vertical-align: top; }
+    .entity-group select { display: block; margin-top: .2em; }
+    #current { margin-bottom: 1em; }
+    #timetable { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    th, td { border: 1px solid #000; padding: .5em; text-align: center; word-wrap: break-word; }
+    th { background: #eee; }
+    .highlight { background: #ffe6f0; }
+    .selected { background: yellow; }
+    .entry-read { background: #ddf; font-weight: bold; }
+  </style>
+  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore-compat.js"></script>
+  <script src="firebase-config.js" onerror="console.warn('firebase-config.js ikke funnet')"></script>
+</head>
+<body>
+  <header>
+    <h1 id="title">Admin – Timeplan</h1>
+    <button id="backBtn" style="display:none;">Endre</button>
+  </header>
+  <div id="controls">
+    <input id="input" placeholder="Skriv... (lærer, klasse, rom, fag, område)" />
+    <div class="entity-group">
+      <button id="teacherBtn">Lærer</button>
+      <select id="teacherSel"><option value="">Velg lærer</option></select>
+    </div>
+    <div class="entity-group">
+      <button id="classBtn">Klasse</button>
+      <select id="classSel"><option value="">Velg klasse</option></select>
+    </div>
+    <div class="entity-group">
+      <button id="roomBtn">Rom</button>
+      <select id="roomSel"><option value="">Velg rom</option></select>
+    </div>
+    <div class="entity-group">
+      <button id="subjectBtn">Fag</button>
+      <select id="subjectSel"><option value="">Velg fag</option></select>
+    </div>
+    <div class="entity-group"><button id="lilleBtn">Lillefri</button></div>
+    <div class="entity-group"><button id="mellomBtn">Mellomspis/storefi</button></div>
+    <div class="entity-group"><button id="smaalBtn">Småspis/storefri</button></div>
+    <div class="entity-group"><button id="morningBtn">Morgeninsp.</button></div>
+    <div class="entity-group"><button id="areaBtn">Område</button></div>
+    <div class="entity-group"><button id="tipBtn">Tips!</button></div>
+    <div class="entity-group">
+      <button id="openBtn">Åpne</button>
+      <select id="openSel"><option value="">Åpne...</option></select>
+    </div>
+  </div>
+  <div id="current">Lærer: - | Klasse: - | Rom: - | Fag: - | Pause: - | Område: -</div>
+  <div id="timetable"></div>
+  <script>
+    (function() {
+      const days = ['Mandag', 'Tirsdag', 'Onsdag', 'Torsdag', 'Fredag'];
+      const times = ['insp. 08:15','08:00','08:30','09:00','09:30','10:00','10:15','11:15','11:45','12:15','12:45','13:15','13:45','14:15','14:45'];
+      let teacherList = [], classList = [], roomList = [], subjectList = [], openList = [];
+      let currentTeacher = '', currentClass = '', currentRoom = '', currentSubject = '', currentBreak = '', currentArea = '';
+      let selectedCell = null, db = null;
+      const params = new URLSearchParams(window.location.search);
+      const view = params.get('view') || 'admin';
+      const id = params.get('id') || '';
+      // Firebase init
+      try {
+        firebase.initializeApp(window.firebaseConfig);
+        db = firebase.firestore();
+      } catch(e) {}
+      const headerTitle = document.getElementById('title');
+      const backBtn = document.getElementById('backBtn');
+      const controls = document.getElementById('controls');
+      // Preload default subjects
+      if (view === 'admin') {
+        const defaultSubjects = ['Engelsk','Norsk','Matematikk','KRØ','K&H','Naturfag','Fysisk','Samfunnsfag'];
+        defaultSubjects.forEach(sub => {
+          if (!subjectList.includes(sub)) {
+            subjectList.push(sub);
+            document.getElementById('subjectSel').append(new Option(sub, sub));
+          }
+        });
+        sortSelect('subjectSel');
+      }
+      // Preload Firestore entities
+      if (view === 'admin' && db) {
+        db.collection('teachers').get().then(snap => {
+          snap.forEach(doc => {
+            const v = doc.id;
+            teacherList.push(v);
+            document.getElementById('teacherSel').append(new Option(v, v));
+            const lbl = 'L-' + v;
+            if (!openList.includes(lbl)) {
+              openList.push(lbl);
+              document.getElementById('openSel').append(new Option(lbl, lbl));
+            }
+          });
+          sortSelect('teacherSel'); sortSelect('openSel');
+        });
+        db.collection('classes').get().then(snap => {
+          snap.forEach(doc => {
+            const v = doc.id;
+            classList.push(v);
+            document.getElementById('classSel').append(new Option(v, v));
+            const lbl = 'Gr-' + v;
+            if (!openList.includes(lbl)) {
+              openList.push(lbl);
+              document.getElementById('openSel').append(new Option(lbl, lbl));
+            }
+            const rv = 'R-' + v;
+            if (!roomList.includes(rv)) {
+              roomList.push(rv);
+              document.getElementById('roomSel').append(new Option(rv, rv));
+            }
+          });
+          sortSelect('classSel'); sortSelect('roomSel'); sortSelect('openSel');
+        });
+        db.collection('rooms').get().then(snap => {
+          snap.forEach(doc => {
+            const v = doc.id;
+            roomList.push(v);
+            document.getElementById('roomSel').append(new Option(v, v));
+            const lbl = 'R-' + v;
+            if (!openList.includes(lbl)) {
+              openList.push(lbl);
+              document.getElementById('openSel').append(new Option(lbl, lbl));
+            }
+          });
+          sortSelect('roomSel'); sortSelect('openSel');
+        });
+      }
+      // View switch
+      if (view !== 'admin' && id) {
+        controls.style.display = 'none';
+        backBtn.style.display = 'inline-block';
+        headerTitle.textContent = `Timeplan: ${id}`;
+      }
+      backBtn.onclick = () => { window.location.search = ''; };
+      // Render grid
+      function renderGrid(readOnly = false) {
+        const container = document.getElementById('timetable'); container.innerHTML = '';
+        const tbl = document.createElement('table');
+        const hdr = tbl.createTHead().insertRow(); hdr.insertCell().textContent = 'Klokke'; days.forEach(d => hdr.insertCell().textContent = d);
+        const body = tbl.createTBody();
+        times.forEach(time => {
+          const row = body.insertRow(); if (['insp. 08:15','10:00','11:15','11:45'].includes(time)) row.classList.add('highlight');
+          row.insertCell().textContent = time;
+          days.forEach(() => { const cell = row.insertCell(); if (!readOnly) cell.addEventListener('click', () => onCellClick(cell)); else cell.classList.add('entry-read'); });
+        });
+        container.appendChild(tbl);
+      }
+      // Update header display
+      function updateDisplay() {
+        document.getElementById('current').textContent =
+          `Lærer: ${currentTeacher||'-'} | Klasse: ${currentClass||'-'} | Rom: ${currentRoom||'-'} | Fag: ${currentSubject||'-'} | Pause: ${currentBreak||'-'} | Område: ${currentArea||'-'}`;
+      }
+      // Parse input entries
+      function parseEntries(raw) {
+        return raw.split(',').map(s => s.trim()).filter(s => s).flatMap(p => {
+          let m;
+          if (m = p.match(/^(\d+)-(\d+)([A-Za-z]+)$/)) {
+            return Array.from({length: +m[2]-+m[1]+1}, (_, i) => +m[1]+i).flatMap(n => m[3].split('').map(ch => n+ch));
+          }
+          if (m = p.match(/^(\d+)([A-Za-z]+)$/)) {
+            return m[2].split('').map(ch => m[1]+ch);
+          }
+          return [p];
+        });
+      }
+      // Sort dropdown options
+      function sortSelect(id) {
+        const sel = document.getElementById(id);
+        const opts = Array.from(sel.options).slice(1);
+        opts.sort((a, b) => a.text.localeCompare(b.text, 'no'));
+        opts.forEach(o => sel.appendChild(o));
+      }
+      // Handle cell click
+      function onCellClick(cell) {
+        if (!cell) return;
+        const bmap = {'Morgeninsp.':'insp. 08:15','Lillefri':'10:00','Mellomspis/storefi':'11:15','Småspis/storefri':'11:45'};
+        if (currentBreak && cell.dataset.time !== bmap[currentBreak]) return;
+        if (selectedCell) selectedCell.classList.remove('selected');
+        selectedCell = cell;
+        cell.classList.add('selected');
+        cell.textContent = currentArea || currentSubject || currentRoom || currentClass || currentTeacher;
+      }
+      // Populate read-only view
+      function populate(schedule) {
+        const table = document.querySelector('#timetable table');
+        if (!table) return;
+        table.querySelectorAll('td.entry-read').forEach(td => td.textContent = '');
+        schedule.forEach(e => {
+          const [day, time] = e.start.split(' ');
+          const headers = Array.from(table.tHead.rows[0].cells).map(c => c.textContent);
+          const ci = headers.indexOf(day);
+          if (ci < 1) return;
+          Array.from(table.tBodies[0].rows).forEach(r => {
+            if (r.cells[0].textContent === time) {
+              const cell = r.cells[ci];
+              cell.textContent = `${e.classId} | ${e.subject} | ${e.roomId}`;
+              cell.classList.add('entry-read');
+            }
+          });
+        });
+      }
+      // Initialize
+      const readOnly = ['teacher','class','room'].includes(view) && id;
+      renderGrid(readOnly);
+      if (!readOnly) {
+        updateDisplay();
+        const inp = document.getElementById('input');
+        function addEntity(type, list, selId, prefix, col) {
+          const entries = parseEntries(inp.value);
+          if (!entries.length) return;
+          entries.forEach(v => {
+            const lbl = prefix + v;
+            if ((prefix === 'L-' || prefix === 'Gr-' || prefix === 'R-') && !openList.includes(lbl)) {
+              openList.push(lbl);
+              document.getElementById('openSel').append(new Option(lbl, lbl));
+              sortSelect('openSel');
+            }
+            if (!list.includes(v)) {
+              list.push(v);
+              document.getElementById(selId).append(new Option(v, v));
+              sortSelect(selId);
+              if (db && col) db.collection(col).doc(v).set({schedule: []});
+              if (type === 'class') {
+                const rv = 'R-' + v;
+                if (!roomList.includes(rv)) {
+                  roomList.push(rv);
+                  document.getElementById('roomSel').append(new Option(rv, rv));
+                  sortSelect('roomSel');
+                }
+              }
+            }
+          });
+          window['current' + type.charAt(0).toUpperCase() + type.slice(1)] = entries.pop();
+          inp.value = '';
+          updateDisplay();
+        }
+        document.getElementById('teacherBtn').onclick = () => addEntity('teacher', teacherList, 'teacherSel', 'L-', 'teachers');
+        document.getElementById('classBtn').onclick   = () => addEntity('class', classList, 'classSel', 'Gr-', 'classes');
+        document.getElementById('roomBtn').onclick    = () => addEntity('room', roomList, 'roomSel', 'R-', 'rooms');
+        document.getElementById('subjectBtn').onclick = () => addEntity('subject', subjectList, 'subjectSel', '', null);
+        ['teacherSel','classSel','roomSel','subjectSel','openSel'].forEach(id => {
+          document.getElementById(id).onchange = e => {
+            const t = id.replace('Sel','');
+            window['current' + t.charAt(0).toUpperCase() + t.slice(1)] = e.target.value;
+            updateDisplay();
+            if (t !== 'open') onCellClick(selectedCell);
+          };
+        });
+        ['lilleBtn','mellomBtn','smaalBtn','morningBtn'].forEach(idBtn => {
+          document.getElementById(idBtn).onclick = () => { currentBreak = document.getElementById(idBtn).textContent; updateDisplay(); };
+        });
+        document.getElementById('areaBtn').onclick = () => { currentArea = inp.value; inp.value = ''; updateDisplay(); onCellClick(selectedCell); };
+        document.getElementById('tipBtn').onclick  = () => { const t = inp.value.trim(); if (!t) alert('Skriv et tips!'); else alert(t); };
+        document.getElementById('openBtn').onclick = () => {
+          const selVal = document.getElementById('openSel').value;
+          if (!selVal) return;
+          const prefix = selVal.slice(0, selVal.indexOf('-') + 1);
+          let viewParam;
+          if (prefix === 'L-') viewParam = 'teacher';
+          else if (prefix === 'Gr-') viewParam = 'class';
+          else if (prefix === 'R-') viewParam = 'room';
+          else return;
+          const value = selVal.slice(selVal.indexOf('-') + 1);
+          window.location.search = `view=${viewParam}&id=${encodeURIComponent(value)}`;
+        };
+        ['teacherSel','classSel','roomSel','subjectSel'].forEach(id => {
+          const sel = document.getElementById(id);
+          sel.addEventListener('contextmenu', e => {
+            e.preventDefault();
+            const idx = sel.selectedIndex;
+            if (idx > 0) {
+              const val = sel.options[idx].value;
+              if (confirm(`Fjern ${val}?`)) {
+                sel.remove(idx);
+                const arrName = id.replace('Sel','') + 'List';
+                if (window[arrName]) {
+                  window[arrName] = window[arrName].filter(v => v !== val);
+                }
+              }
+            }
+          });
+        });
+      } else if (db) {
+        const collection = view === 'teacher' ? 'teachers' : view === 'class' ? 'classes' : 'rooms';
+        db.collection(collection).doc(id).onSnapshot(docSnap => {
+          const data = docSnap.data();
+          if (data && Array.isArray(data.schedule)) populate(data.schedule);
+        });
+      }
+    })();
+  </script>
+</body>
+</html>
